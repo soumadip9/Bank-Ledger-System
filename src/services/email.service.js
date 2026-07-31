@@ -23,6 +23,11 @@ transporter.verify((error, success) => {
 
 // Generic send email function
 const sendEmail = async (to, subject, text, html) => {
+    if (!process.env.EMAIL_USER || !process.env.CLIENT_ID || !process.env.REFRESH_TOKEN) {
+        console.warn("Email skipped: OAuth env vars not configured");
+        return;
+    }
+
     try {
         const info = await transporter.sendMail({
             from: `"Soumadip Ghosh" <${process.env.EMAIL_USER}>`,
@@ -34,8 +39,8 @@ const sendEmail = async (to, subject, text, html) => {
 
         console.log("Message sent:", info.messageId);
     } catch (error) {
-        console.error("Error sending email:", error);
-        throw error;
+        console.error("Error sending email:", error.message || error);
+        // Do not throw — email must not fail API requests
     }
 };
 

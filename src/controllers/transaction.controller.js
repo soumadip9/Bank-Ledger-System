@@ -69,57 +69,73 @@ async function createTransaction(req, res) {
     }
 
     const session = await mongoose.startSession();
+    let committed = false;
 
     try {
         session.startTransaction();
 
         const transaction = new transactionModel({
-                
-                    fromAccount,
-                    toAccount,
-                    amount,
-                    idempotencyKey,
-                    status: "pending",
-            
-    })
+            fromAccount,
+            toAccount,
+            amount,
+            idempotencyKey,
+            status: "pending",
+        });
 
-      const debitLedger = await ledgerModel.create([{
-        account: fromUserAccount._id,
-        amount: amount,
-        transaction: transaction._id,
-        type: "debit"
-    }], { session })
-    const creditLedger = await ledgerModel.create([{
-        account: toUserAccount._id,
-        amount: amount,
-        transaction: transaction._id,
-        type: "credit"
-    }], { session });
+        await ledgerModel.create([{
+            account: fromUserAccount._id,
+            amount: amount,
+            transaction: transaction._id,
+            type: "debit"
+        }], { session });
+
+        await ledgerModel.create([{
+            account: toUserAccount._id,
+            amount: amount,
+            transaction: transaction._id,
+            type: "credit"
+        }], { session });
 
         transaction.status = "completed";
-
         await transaction.save({ session });
-
         await session.commitTransaction();
-        session.endSession()
+        committed = true;
 
-        await emailService.sendTransactionEmail(
-            fromUserAccount.user.email,
-            fromUserAccount.user.name,
-            toUserAccount.user.name,
-            amount
-        );
-
-        return res.status(201).json({
+        // Respond immediately — do not block on email (Gmail OAuth is slow on Render
+        // and used to throw 500 after money already moved).
+        res.status(201).json({
             message: "Transaction completed successfully",
             transaction,
         });
-    } catch (error) {
-        await session.abortTransaction();
 
-        return res.status(500).json({
-            message: error.message,
-        });
+        if (fromUserAccount.user?.email) {
+            emailService
+                .sendTransactionEmail(
+                    fromUserAccount.user.email,
+                    fromUserAccount.user.name,
+                    toUserAccount.user.name,
+                    amount
+                )
+                .catch((emailError) => {
+                    console.error("Transaction email failed:", emailError.message);
+                });
+        }
+    } catch (error) {
+        if (!committed) {
+            try {
+                await session.abortTransaction();
+            } catch (abortError) {
+                console.error("Abort transaction failed:", abortError.message);
+            }
+        }
+
+        if (!res.headersSent) {
+            return res.status(500).json({
+                message: error.message,
+            });
+        }
+    } finally {
+        session.endSession();
     }
 }
 

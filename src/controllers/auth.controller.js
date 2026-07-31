@@ -1,4 +1,5 @@
 const userModel=require('../models/user.model');
+const blacklistModel=require('../models/blacklist.model');
 const jwt=require('jsonwebtoken');
 const emailService=require('../services/email.service');
 
@@ -60,6 +61,34 @@ res.status(200).json({
 });
 }
 
+async function userLogoutController(req,res){
+    const token=req.cookies.token || req.headers.authorization?.split(" ")[1];
+    if(!token){
+        return res.status(401).json({
+            message:"Unauthorized"
+        })
+    }
 
+    try {
+        const decoded=jwt.verify(token,process.env.JWT_SECRET);
 
-module.exports={userRegisterController, userLoginController}
+        const alreadyBlacklisted=await blacklistModel.findOne({ token })
+        if(!alreadyBlacklisted){
+            await blacklistModel.create({
+                token,
+                expiresAt: new Date(decoded.exp * 1000)
+            })
+        }
+
+        res.clearCookie("token")
+        return res.status(200).json({
+            message:"Logged out successfully"
+        })
+    } catch (error) {
+        return res.status(401).json({
+            message:"Unauthorized"
+        })
+    }
+}
+
+module.exports={userRegisterController, userLoginController, userLogoutController}

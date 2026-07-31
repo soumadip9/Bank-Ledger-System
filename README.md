@@ -2,7 +2,32 @@
 
 A Node.js / Express backend for a **double-entry banking ledger**. Money never lives as a mutable balance field. Instead, every movement of funds is recorded as immutable **debit** and **credit** ledger entries. Account balances are always computed by aggregating those entries.
 
-This document walks through the project end to end: concepts, architecture, setup, data models, auth, APIs, and the full money-transfer flow.
+This document walks through the project end to end: concepts, architecture, setup, data models, auth, APIs, Swagger docs, and the full money-transfer flow.
+
+---
+
+## Live demo (Render)
+
+| Resource | URL |
+|---|---|
+| **Swagger UI (try the API live)** | [https://bank-ledger-system-trq8.onrender.com/api-docs](https://bank-ledger-system-trq8.onrender.com/api-docs) |
+| OpenAPI JSON | [https://bank-ledger-system-trq8.onrender.com/api-docs.json](https://bank-ledger-system-trq8.onrender.com/api-docs.json) |
+| Health check | [https://bank-ledger-system-trq8.onrender.com/](https://bank-ledger-system-trq8.onrender.com/) |
+| Repository | [https://github.com/soumadip9/Bank-Ledger-System](https://github.com/soumadip9/Bank-Ledger-System) |
+
+> **Note:** The free Render tier may spin down after idle time. The first request can take 30–60 seconds while the service wakes up.
+
+### Quick live test in Swagger
+
+1. Open the [Swagger UI](https://bank-ledger-system-trq8.onrender.com/api-docs)
+2. `POST /api/auth/register` (or `login`) → copy `token` from the response
+3. Click **Authorize** → paste the token → **Authorize**
+4. `POST /api/account/` → copy account `_id`
+5. `GET /api/account/balance/{accountId}` → confirm balance
+6. Create a second user/account, then `POST /api/transactions/` with a **new** `idempotencyKey`
+7. `POST /api/auth/logout` → retry a protected route → expect `401`
+
+There is **no public ledger list endpoint**. Ledger rows are written internally on each transfer; you observe them via **balance** (and in MongoDB).
 
 ---
 
@@ -17,11 +42,13 @@ This document walks through the project end to end: concepts, architecture, setu
 7. [Application bootstrap](#7-application-bootstrap)
 8. [Data models](#8-data-models)
 9. [Authentication & token blacklisting](#9-authentication--token-blacklisting)
-10. [API reference](#10-api-reference)
-11. [End-to-end money flow](#11-end-to-end-money-flow)
-12. [Email notifications](#12-email-notifications)
-13. [Security notes](#13-security-notes)
-14. [Scripts](#14-scripts)
+10. [API documentation (Swagger)](#10-api-documentation-swagger)
+11. [API reference](#11-api-reference)
+12. [End-to-end money flow](#12-end-to-end-money-flow)
+13. [Email notifications](#13-email-notifications)
+14. [Deployment (Render)](#14-deployment-render)
+15. [Security notes](#15-security-notes)
+16. [Scripts](#16-scripts)
 
 ---
 
@@ -36,7 +63,8 @@ Users can:
 | **Transfer money** | Move funds between accounts with idempotency and MongoDB transactions |
 | **Seed funds (system)** | A privileged `systemUser` can credit initial funds into an account |
 | **Check balance** | Balance is derived from the ledger, not stored as a mutable field |
-| **Email alerts** | Registration welcome mail and transfer success mail via Gmail OAuth2 |
+| **Email alerts** | Registration welcome mail and transfer success mail via Gmail OAuth2 (non-blocking after transfers) |
+| **Interactive API docs** | OpenAPI 3.0 Swagger UI at `/api-docs` (local + Render) |
 
 Typical lifecycle:
 
@@ -94,12 +122,14 @@ JWTs are issued on register/login (3-day expiry). On logout, the token is stored
 
 | Layer | Technology |
 |---|---|
-| Runtime | Node.js (CommonJS) |
+| Runtime | Node.js (CommonJS), Node 18+ |
 | HTTP framework | Express 5 |
 | Database | MongoDB via Mongoose 9 |
 | Auth | `jsonwebtoken`, `bcryptjs`, `cookie-parser` |
 | Email | Nodemailer (Gmail OAuth2) |
+| API docs | `swagger-jsdoc`, `swagger-ui-express` (OpenAPI 3.0) |
 | Config | `dotenv` |
+| Hosting | Render Web Service + MongoDB Atlas |
 
 ---
 
@@ -107,14 +137,21 @@ JWTs are issued on register/login (3-day expiry). On logout, the token is stored
 
 ```text
 Bank-Ledger-System/
-├── server.js                 # Entry point: load env, connect DB, listen on :3000
+├── server.js                 # Entry point: load env, connect DB, listen on PORT
 ├── package.json
+├── render.yaml               # Render Blueprint config
 ├── .gitignore
 ├── test.js                   # Standalone Mongo connectivity smoke test
 └── src/
-    ├── app.js                # Express app, middleware, route mounting
+    ├── app.js                # Express app, middleware, Swagger mount, routes
     ├── config/
-    │   └── db.js             # MongoDB connection helper
+    │   ├── db.js             # MongoDB connection helper
+    │   └── swagger.js        # OpenAPI 3.0 config + Swagger UI setup
+    ├── docs/                 # Modular OpenAPI path definitions
+    │   ├── health.docs.js
+    │   ├── auth.docs.js
+    │   ├── accounts.docs.js
+    │   └── transactions.docs.js
     ├── middleware/
     │   └── auth.middleware.js
     ├── models/
@@ -139,7 +176,8 @@ Bank-Ledger-System/
 
 | Folder | Role |
 |---|---|
-| `config/` | Infrastructure (DB) |
+| `config/` | Infrastructure (DB) + Swagger setup |
+| `docs/` | OpenAPI path docs (modular; no business logic) |
 | `models/` | Schemas, invariants, domain helpers (e.g. `getBalance`) |
 | `controllers/` | Request validation + orchestration |
 | `routes/` | HTTP path → controller wiring + auth guards |
@@ -150,6 +188,9 @@ Route prefixes (from `src/app.js`):
 
 | Prefix | Router |
 |---|---|
+| `/` | Health check |
+| `/api-docs` | Swagger UI |
+| `/api-docs.json` | Raw OpenAPI spec |
 | `/api/auth` | Auth |
 | `/api/account` | Accounts + balance |
 | `/api/transactions` | Transfers + system funding |
@@ -186,9 +227,11 @@ npm run dev
 npm start
 ```
 
-Server listens on **port 3000**.
+Server listens on **`process.env.PORT`** (Render) or **3000** locally.
 
-Health check of sorts: if Mongo connects, you will see `Connected to MongoDB` in the console. If email OAuth is configured correctly, you will also see `Email server is ready to send messages`.
+Health check: `GET /` → `{ "status": "ok", "message": "Bank Ledger System is running" }`.
+
+Local Swagger: [http://localhost:3000/api-docs](http://localhost:3000/api-docs)
 
 ---
 
@@ -226,13 +269,15 @@ Startup sequence (`server.js`):
 1. Load environment variables with `dotenv`
 2. Import Express app (`src/app.js`)
 3. Connect to MongoDB (`src/config/db.js`)
-4. Listen on port `3000`
+4. Listen on `process.env.PORT || 3000`
 
 Express app setup (`src/app.js`):
 
 1. `express.json()` — parse JSON bodies
 2. `cookieParser()` — read auth cookie named `token`
-3. Mount routers under `/api/*`
+3. Health route `GET /`
+4. `setupSwagger(app)` — mounts `/api-docs` and `/api-docs.json`
+5. Mount routers under `/api/*`
 
 ---
 
@@ -293,6 +338,8 @@ Immutable double-entry line item.
 | `type` | enum | `credit` \| `debit`, immutable |
 
 Update/delete hooks throw: *"Ledger entries cannot be modified or deleted"*.
+
+> **API note:** Ledger entries are created only inside transfer flows. There is currently **no** `GET /ledger` route in Swagger — use `GET /api/account/balance/:accountId` to observe the net effect of ledger rows.
 
 ### Blacklist (`Blacklist`)
 
@@ -360,9 +407,39 @@ After logout, the same JWT fails all protected routes until Mongo TTL removes th
 
 ---
 
-## 10. API reference
+## 10. API documentation (Swagger)
 
-Base URL: `http://localhost:3000`
+Interactive OpenAPI 3.0 docs are generated with `swagger-jsdoc` + `swagger-ui-express`.
+
+| Environment | Swagger UI | OpenAPI JSON |
+|---|---|---|
+| **Live (Render)** | [https://bank-ledger-system-trq8.onrender.com/api-docs](https://bank-ledger-system-trq8.onrender.com/api-docs) | [api-docs.json](https://bank-ledger-system-trq8.onrender.com/api-docs.json) |
+| **Local** | [http://localhost:3000/api-docs](http://localhost:3000/api-docs) | [http://localhost:3000/api-docs.json](http://localhost:3000/api-docs.json) |
+
+Configuration lives in `src/config/swagger.js`. Path definitions are modular under `src/docs/`.
+
+### Using Authorize in Swagger
+
+1. Call `POST /api/auth/login`
+2. Copy the `token` string from the response body
+3. Click **Authorize** (top of the page)
+4. Paste the raw JWT (Swagger adds the `Bearer` prefix)
+5. Call protected endpoints (Accounts / Transactions)
+
+**Tips**
+
+- Clearing the Authorize box does **not** always clear the browser `token` cookie set on login. Call `POST /api/auth/logout`, then **Execute** again on a protected route to verify `401`.
+- Reusing the same `idempotencyKey` returns `200 Transaction already completed`. Change the key for a new transfer.
+- Prefer a **new** unique key every time you intentionally create a new transfer (e.g. `tx-test-001`, `tx-test-002`).
+
+---
+
+## 11. API reference
+
+Base URLs:
+
+- Local: `http://localhost:3000`
+- Live: `https://bank-ledger-system-trq8.onrender.com`
 
 Unless noted, send JSON (`Content-Type: application/json`).
 
@@ -370,6 +447,8 @@ For protected routes, include either:
 
 - Cookie: `token=<jwt>`
 - Header: `Authorization: Bearer <jwt>`
+
+For the fullest interactive reference (examples, schemas, try-it-out), use the [live Swagger UI](https://bank-ledger-system-trq8.onrender.com/api-docs).
 
 ---
 
@@ -504,7 +583,7 @@ Transfer funds between two accounts (double-entry + Mongo transaction).
 4. Both accounts must be `active`
 5. Sender balance must be `>= amount`
 6. In a Mongo session: create debit + credit ledgers, mark transaction `completed`, commit
-7. Email the sender on success
+7. Return `201` immediately; send transfer email in the background (email failures do not fail the transfer)
 
 **Responses**
 
@@ -544,20 +623,22 @@ You must seed a system user in Mongo with `systemUser: true` and give that user 
 
 ---
 
-## 11. End-to-end money flow
+## 12. End-to-end money flow
 
-### Happy path (manual / Postman)
+### Happy path (Swagger on Render or Postman)
+
+Use the [live Swagger UI](https://bank-ledger-system-trq8.onrender.com/api-docs) or any HTTP client against the Render base URL.
 
 1. **Register** two users: Alice and Bob  
    `POST /api/auth/register`
-2. **Login** as Alice → save token  
+2. **Login** as Alice → save token → **Authorize** in Swagger  
    `POST /api/auth/login`
 3. **Create** Alice’s account  
    `POST /api/account/`
 4. Login as Bob → create Bob’s account
-5. Login as **system user** → fund Alice  
+5. *(Optional)* Login as **system user** → fund Alice  
    `POST /api/transactions/system/initial-fund`
-6. Login as Alice → transfer to Bob  
+6. Login as Alice → transfer to Bob with a **unique** `idempotencyKey`  
    `POST /api/transactions/`
 7. Check balances  
    `GET /api/account/balance/:accountId`
@@ -583,7 +664,8 @@ createTransaction()
   │    ├─ Ledger credit (to)
   │    ├─ Transaction status → completed
   │    └─ commitTransaction()
-  └─ sendTransactionEmail(sender)
+  ├─ return 201 to client
+  └─ sendTransactionEmail(sender)  (background / best-effort)
 ```
 
 ### Balance example
@@ -598,24 +680,44 @@ After funding Alice with `1000` and transferring `300` to Bob:
 
 ---
 
-## 12. Email notifications
+## 13. Email notifications
 
 Implemented in `src/services/email.service.js` using Nodemailer + Gmail OAuth2.
 
 | Function | Trigger |
 |---|---|
 | `sendRegistrationEmail` | After successful register |
-| `sendTransactionEmail` | After successful user transfer |
+| `sendTransactionEmail` | After successful user transfer (background; does not block/fail the API) |
 | `transactionFailureEmail` | Available for failure notifications |
 
-Emails are a best-effort side effect. Ensure OAuth credentials are valid; misconfiguration logs errors at startup (`transporter.verify`).
+Emails are best-effort. Missing OAuth env vars skips sending. A production hardening path is to publish a `transaction.completed` event to a message queue (e.g. Kafka / SQS) and send mail from a worker.
 
 ---
 
-## 13. Security notes
+## 14. Deployment (Render)
+
+This service is deployed as a Render **Web Service** from GitHub.
+
+| Setting | Value |
+|---|---|
+| Build command | `npm install` |
+| Start command | `npm start` (runs `node server.js`) |
+| Health | `GET /` |
+| Required env | `MONGO_URI`, `JWT_SECRET` |
+| Optional env | `EMAIL_USER`, `CLIENT_ID`, `CLIENT_SECRET`, `REFRESH_TOKEN` |
+
+Also see `render.yaml` for Blueprint-style config. Atlas **Network Access** must allow Render (`0.0.0.0/0` is typical for demos).
+
+**Live Swagger for testing:**  
+[https://bank-ledger-system-trq8.onrender.com/api-docs](https://bank-ledger-system-trq8.onrender.com/api-docs)
+
+---
+
+## 15. Security notes
 
 - Passwords are hashed with **bcrypt** before save and never returned by default queries.
 - JWTs expire in **3 days**; logout adds them to a TTL-backed blacklist.
+- Auth accepts **Bearer token** or cookie `token` — clearing only Swagger Authorize may leave the cookie active; call logout to invalidate.
 - Ledger rows are **immutable** at the application/model layer.
 - Transfers use **idempotency keys** to reduce double-spend from retries.
 - Transfers that mutate money use **MongoDB multi-document transactions** (requires a replica set — Atlas provides this by default).
@@ -624,7 +726,7 @@ Emails are a best-effort side effect. Ensure OAuth credentials are valid; miscon
 
 ---
 
-## 14. Scripts
+## 16. Scripts
 
 | Command | Description |
 |---|---|
@@ -642,36 +744,48 @@ node test.js
 
 ## Example cURL snippets
 
+Against **local**:
+
+```bash
+BASE=http://localhost:3000
+```
+
+Against **Render**:
+
+```bash
+BASE=https://bank-ledger-system-trq8.onrender.com
+```
+
 ```bash
 # Register
-curl -X POST http://localhost:3000/api/auth/register \
+curl -X POST "$BASE/api/auth/register" \
   -H "Content-Type: application/json" \
   -d "{\"name\":\"Alice\",\"email\":\"alice@example.com\",\"password\":\"secret123\"}" \
   -c cookies.txt
 
 # Login
-curl -X POST http://localhost:3000/api/auth/login \
+curl -X POST "$BASE/api/auth/login" \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"alice@example.com\",\"password\":\"secret123\"}" \
   -c cookies.txt
 
 # Create account
-curl -X POST http://localhost:3000/api/account/ \
+curl -X POST "$BASE/api/account/" \
   -H "Content-Type: application/json" \
   -b cookies.txt \
   -d "{\"name\":\"Alice Main\",\"description\":\"Primary\"}"
 
-# Transfer
-curl -X POST http://localhost:3000/api/transactions/ \
+# Transfer (use a unique idempotencyKey each new transfer)
+curl -X POST "$BASE/api/transactions/" \
   -H "Content-Type: application/json" \
   -b cookies.txt \
   -d "{\"fromAccount\":\"<FROM_ID>\",\"toAccount\":\"<TO_ID>\",\"amount\":100,\"idempotencyKey\":\"tx-001\"}"
 
 # Balance
-curl http://localhost:3000/api/account/balance/<ACCOUNT_ID> -b cookies.txt
+curl "$BASE/api/account/balance/<ACCOUNT_ID>" -b cookies.txt
 
 # Logout (blacklists token)
-curl -X POST http://localhost:3000/api/auth/logout -b cookies.txt
+curl -X POST "$BASE/api/auth/logout" -b cookies.txt
 ```
 
 ---

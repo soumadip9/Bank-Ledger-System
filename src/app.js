@@ -7,6 +7,14 @@ const transactionRouter=require('./routes/transaction.routes');
 const app=express();
 app.use(express.json());
 app.use(cookieParser());
+
+app.get("/", (req, res) => {
+    res.status(200).json({
+        status: "ok",
+        message: "Bank Ledger System is running"
+    });
+});
+
 app.use("/api/auth",authRouter)
 app.use("/api/account",accountRouter)
 app.use("/api/transactions",transactionRouter)

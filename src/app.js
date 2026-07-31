@@ -3,6 +3,7 @@ const cookieParser=require('cookie-parser');
 const authRouter=require('./routes/auth.routes');
 const accountRouter=require('./routes/account.routes');
 const transactionRouter=require('./routes/transaction.routes');
+const { setupSwagger }=require('./config/swagger');
 
 const app=express();
 app.use(express.json());
@@ -14,6 +15,8 @@ app.get("/", (req, res) => {
         message: "Bank Ledger System is running"
     });
 });
+
+setupSwagger(app);
 
 app.use("/api/auth",authRouter)
 app.use("/api/account",accountRouter)

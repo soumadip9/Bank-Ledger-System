@@ -1,82 +1,65 @@
-const mongoose = require("mongoose");
-const ledgerModel = require("./ledger.model");
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/db');
 
-const accountSchema = new mongoose.Schema(
+const Account = sequelize.define(
+  'Account',
   {
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: [true, "User is required"],
-      index: true,
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true,
+    },
+    userId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: 'user_id',
     },
     status: {
-      type: String,
-      enum: {
-        values: ["active", "frozen", "closed"],
-        message: "Status must be either active, frozen or closed",
-      },
-      default: "active",
+      type: DataTypes.ENUM('active', 'frozen', 'closed'),
+      allowNull: false,
+      defaultValue: 'active',
     },
     currency: {
-      type: String,
-      required: [true, "Currency is required"],
-      default: "INR",
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: 'INR',
     },
   },
   {
+    tableName: 'accounts',
     timestamps: true,
+    indexes: [{ fields: ['user_id', 'status'] }],
   }
 );
 
-accountSchema.index({ user: 1, status: 1 });
+Account.prototype.getBalance = async function getBalance(options = {}) {
+  const Ledger = require('./ledger.model');
+  const { literal } = require('sequelize');
 
-accountSchema.methods.getBalance = async function () {
-  const balanceData = await ledgerModel.aggregate([
-    {
-      $match: {
-        account: this._id,
-      },
-    },
-    {
-      $group: {
-        _id: null,
-        totalDebit: {
-          $sum: {
-            $cond: [
-              { $eq: ["$type", "debit"] },
-              "$amount",
-              0,
-            ],
-          },
-        },
-        totalCredit: {
-          $sum: {
-            $cond: [
-              { $eq: ["$type", "credit"] },
-              "$amount",
-              0,
-            ],
-          },
-        },
-      },
-    },
-    {
-      $project: {
-        _id: 0,
-        balance: {
-          $subtract: ["$totalCredit", "$totalDebit"],
-        },
-      },
-    },
-  ]);
+  const row = await Ledger.findOne({
+    attributes: [
+      [
+        literal(`
+          COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END), 0)
+          - COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END), 0)
+        `),
+        'balance',
+      ],
+    ],
+    where: { accountId: this.id },
+    raw: true,
+    transaction: options.transaction,
+  });
 
-  if (balanceData.length === 0) {
-    return 0;
-  }
-
-  return balanceData[0].balance;
+  const balance = row?.balance;
+  return balance === null || balance === undefined ? 0 : Number(balance);
 };
 
-const accountModel = mongoose.model("Account", accountSchema);
+Account.prototype.toJSON = function toJSON() {
+  const values = { ...this.get() };
+  values._id = values.id;
+  values.user = values.userId;
+  return values;
+};
 
-module.exports = accountModel;
+module.exports = Account;

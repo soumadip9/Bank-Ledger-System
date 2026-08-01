@@ -1,6 +1,6 @@
 # Bank Ledger System
 
-A Node.js / Express backend for a **double-entry banking ledger**. Money never lives as a mutable balance field. Instead, every movement of funds is recorded as immutable **debit** and **credit** ledger entries. Account balances are always computed by aggregating those entries.
+A Node.js / Express backend for a **double-entry banking ledger**, backed by **PostgreSQL** (Sequelize). Money never lives as a mutable balance field. Instead, every movement of funds is recorded as immutable **debit** and **credit** ledger entries. Account balances are always computed by aggregating those entries.
 
 This document walks through the project end to end: concepts, architecture, setup, data models, auth, APIs, Swagger docs, and the full money-transfer flow.
 
@@ -27,7 +27,7 @@ This document walks through the project end to end: concepts, architecture, setu
 6. Create a second user/account, then `POST /api/transactions/` with a **new** `idempotencyKey`
 7. `POST /api/auth/logout` → retry a protected route → expect `401`
 
-There is **no public ledger list endpoint**. Ledger rows are written internally on each transfer; you observe them via **balance** (and in MongoDB).
+There is **no public ledger list endpoint**. Ledger rows are written internally on each transfer; you observe them via **balance** (and in the `ledgers` table).
 
 ---
 
@@ -60,7 +60,7 @@ Users can:
 |---|---|
 | **Register / login / logout** | JWT-based auth with cookie + Bearer header support; logout blacklists the token |
 | **Create accounts** | Authenticated users open bank accounts linked to their user |
-| **Transfer money** | Move funds between accounts with idempotency and MongoDB transactions |
+| **Transfer money** | Move funds between accounts with idempotency and PostgreSQL ACID transactions |
 | **Seed funds (system)** | A privileged `systemUser` can credit initial funds into an account |
 | **Check balance** | Balance is derived from the ledger, not stored as a mutable field |
 | **Email alerts** | Registration welcome mail and transfer success mail via Gmail OAuth2 (non-blocking after transfers) |
@@ -91,30 +91,30 @@ Balance for an account:
 balance = sum(credits) − sum(debits)
 ```
 
-Implemented on the Account model via MongoDB aggregation (`getBalance()`).
+Implemented on the Account model via SQL aggregation (`getBalance()`).
 
 ### Immutability
 
-Ledger entries cannot be updated or deleted. Mongoose middleware on the Ledger model throws if modification/delete hooks are triggered. History is append-only.
+Ledger entries cannot be updated or deleted. Sequelize hooks on the Ledger model throw if modification/delete is attempted. History is append-only.
 
 ### Idempotent transfers
 
 Every transfer requires a unique `idempotencyKey`. Retries with the same key return the previous outcome (`pending` / `completed` / `failed`) instead of creating duplicate money movement.
 
-### Atomic transfers
+### Atomic transfers (ACID)
 
-User-to-user transfers run inside a **MongoDB session transaction**:
+User-to-user transfers run inside a **PostgreSQL transaction** via Sequelize:
 
 1. Create pending transaction
 2. Create debit + credit ledger entries
 3. Mark transaction `completed`
-4. Commit — or abort on failure
+4. Commit — or roll back on failure
 
-This keeps ledger + transaction state consistent.
+This keeps ledger + transaction state consistent (Atomicity, Consistency, Isolation, Durability).
 
 ### Stateless JWT + server-side blacklist
 
-JWTs are issued on register/login (3-day expiry). On logout, the token is stored in a `Blacklist` collection until it expires. Auth middleware rejects blacklisted tokens so a logged-out JWT cannot be reused.
+JWTs are issued on register/login (3-day expiry). On logout, the token is stored in the `blacklists` table until `expires_at`. Auth middleware rejects blacklisted tokens so a logged-out JWT cannot be reused.
 
 ---
 
@@ -124,12 +124,12 @@ JWTs are issued on register/login (3-day expiry). On logout, the token is stored
 |---|---|
 | Runtime | Node.js (CommonJS), Node 18+ |
 | HTTP framework | Express 5 |
-| Database | MongoDB via Mongoose 9 |
+| Database | PostgreSQL via Sequelize + `pg` |
 | Auth | `jsonwebtoken`, `bcryptjs`, `cookie-parser` |
 | Email | Nodemailer (Gmail OAuth2) |
 | API docs | `swagger-jsdoc`, `swagger-ui-express` (OpenAPI 3.0) |
 | Config | `dotenv` |
-| Hosting | Render Web Service + MongoDB Atlas |
+| Hosting | Render Web Service + managed PostgreSQL (e.g. Render Postgres / Neon / Supabase) |
 
 ---
 
@@ -145,7 +145,7 @@ Bank-Ledger-System/
 └── src/
     ├── app.js                # Express app, middleware, Swagger mount, routes
     ├── config/
-    │   ├── db.js             # MongoDB connection helper
+    │   ├── db.js             # PostgreSQL / Sequelize connection helper
     │   └── swagger.js        # OpenAPI 3.0 config + Swagger UI setup
     ├── docs/                 # Modular OpenAPI path definitions
     │   ├── health.docs.js
@@ -202,7 +202,7 @@ Route prefixes (from `src/app.js`):
 ### Prerequisites
 
 - Node.js 18+ recommended
-- MongoDB Atlas URI (or local MongoDB)
+- PostgreSQL database (`DATABASE_URL`)
 - (Optional) Gmail OAuth2 credentials for email
 
 ### Install
@@ -239,7 +239,8 @@ Local Swagger: [http://localhost:3000/api-docs](http://localhost:3000/api-docs)
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `MONGO_URI` | Yes | MongoDB connection string |
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `DB_SSL` | No | Set `false` for local Postgres without SSL (default uses SSL for hosted DBs) |
 | `JWT_SECRET` | Yes | Secret used to sign/verify JWTs |
 | `EMAIL_USER` | For email | Gmail address used as sender |
 | `CLIENT_ID` | For email | Google OAuth client ID |
@@ -249,7 +250,8 @@ Local Swagger: [http://localhost:3000/api-docs](http://localhost:3000/api-docs)
 Example `.env`:
 
 ```env
-MONGO_URI=mongodb+srv://<user>:<password>@<cluster>/<db>
+DATABASE_URL=postgresql://user:password@localhost:5432/bank_ledger
+DB_SSL=false
 JWT_SECRET=your_strong_random_secret
 
 EMAIL_USER=you@gmail.com
@@ -268,7 +270,7 @@ Startup sequence (`server.js`):
 
 1. Load environment variables with `dotenv`
 2. Import Express app (`src/app.js`)
-3. Connect to MongoDB (`src/config/db.js`)
+3. Connect to PostgreSQL and sync models (`src/config/db.js`)
 4. Listen on `process.env.PORT || 3000`
 
 Express app setup (`src/app.js`):
@@ -287,31 +289,31 @@ Express app setup (`src/app.js`):
 
 | Field | Type | Notes |
 |---|---|---|
-| `email` | String | Required, unique, basic email regex |
+| `id` / `_id` | UUID | Primary key |
+| `email` | String | Required, unique, email validation |
 | `name` | String | Required |
-| `password` | String | Required, min 6 chars; hashed with bcrypt on save; excluded from queries by default (`select: false`) |
+| `password` | String | Required, min 6 chars; hashed with bcrypt; excluded by default scope |
 | `systemUser` | Boolean | Default `false`, **immutable** — marks privileged funding user |
 | `createdAt` / `updatedAt` | Date | Via `timestamps` |
 
 Helpers:
 
-- `pre('save')` hashes password when modified
+- Sequelize hooks hash password on create/update
 - `comparePassword(candidate)` for login
 
 ### Account (`Account`)
 
 | Field | Type | Notes |
 |---|---|---|
-| `user` | ObjectId → User | Owner; indexed |
+| `id` / `_id` | UUID | Primary key (API responses also expose `_id`) |
+| `userId` | UUID → User | Owner; indexed (JSON also maps as `user`) |
 | `status` | enum | `active` \| `frozen` \| `closed` (default `active`) |
 | `currency` | String | Default `INR` |
 | timestamps | Date | Created/updated |
 
-Indexes: `{ user: 1, status: 1 }`
-
 Method:
 
-- `getBalance()` — aggregates Ledger credits/debits for this account
+- `getBalance()` — SQL aggregate of Ledger credits/debits for this account
 
 ### Transaction (`Transaction`)
 
@@ -319,9 +321,9 @@ Represents an attempted or completed money move between two accounts.
 
 | Field | Type | Notes |
 |---|---|---|
-| `fromAccount` | ObjectId → Account | Source |
-| `toAccount` | ObjectId → Account | Destination |
-| `amount` | Number | `>= 0` |
+| `fromAccountId` | UUID → Account | Source (JSON: `fromAccount`) |
+| `toAccountId` | UUID → Account | Destination (JSON: `toAccount`) |
+| `amount` | DECIMAL(14,2) | `>= 0` |
 | `status` | enum | `pending` \| `completed` \| `failed` |
 | `idempotencyKey` | String | **Unique**, required |
 | timestamps | Date | Created/updated |
@@ -332,9 +334,9 @@ Immutable double-entry line item.
 
 | Field | Type | Notes |
 |---|---|---|
-| `account` | ObjectId → Account | Immutable |
-| `amount` | Number | `>= 0`, immutable |
-| `transaction` | ObjectId → Transaction | Immutable |
+| `accountId` | UUID → Account | Immutable (JSON: `account`) |
+| `amount` | DECIMAL(14,2) | `>= 0`, immutable |
+| `transactionId` | UUID → Transaction | Immutable (JSON: `transaction`) |
 | `type` | enum | `credit` \| `debit`, immutable |
 
 Update/delete hooks throw: *"Ledger entries cannot be modified or deleted"*.
@@ -348,7 +350,7 @@ Stores invalidated JWTs after logout.
 | Field | Type | Notes |
 |---|---|---|
 | `token` | String | Unique, indexed |
-| `expiresAt` | Date | TTL index `{ expires: 0 }` — MongoDB auto-deletes after JWT natural expiry |
+| `expiresAt` | Date | Matches JWT `exp`; expired rows are purged on auth checks |
 | timestamps | Date | Created/updated |
 
 ---
@@ -544,7 +546,7 @@ Return computed ledger balance for an account **owned by** the authenticated use
 
 ```json
 {
-  "accountId": "<ObjectId>",
+  "accountId": "<account-uuid>",
   "balance": 1500
 }
 ```
@@ -557,7 +559,7 @@ Return computed ledger balance for an account **owned by** the authenticated use
 
 #### `POST /api/transactions/`
 
-Transfer funds between two accounts (double-entry + Mongo transaction).
+Transfer funds between two accounts (double-entry + PostgreSQL ACID transaction).
 
 **Auth:** required
 
@@ -565,8 +567,8 @@ Transfer funds between two accounts (double-entry + Mongo transaction).
 
 ```json
 {
-  "fromAccount": "<accountObjectId>",
-  "toAccount": "<accountObjectId>",
+  "fromAccount": "<account-uuid>",
+  "toAccount": "<account-uuid>",
   "amount": 500,
   "idempotencyKey": "unique-client-key-001"
 }
@@ -575,14 +577,14 @@ Transfer funds between two accounts (double-entry + Mongo transaction).
 **Behavior summary**
 
 1. Validate required fields
-2. Load both accounts (+ populate users)
+2. Load both accounts (+ include users)
 3. If `idempotencyKey` already exists:
    - `failed` → `500` with retry message
    - `completed` → `200` with existing transaction
    - `pending` → `200` with pending transaction
 4. Both accounts must be `active`
 5. Sender balance must be `>= amount`
-6. In a Mongo session: create debit + credit ledgers, mark transaction `completed`, commit
+6. In a PostgreSQL transaction: create debit + credit ledgers, mark transaction `completed`, commit
 7. Return `201` immediately; send transfer email in the background (email failures do not fail the transfer)
 
 **Responses**
@@ -607,7 +609,7 @@ Credit an account from the **system user’s** account (seed / treasury funding)
 
 ```json
 {
-  "toAccount": "<accountObjectId>",
+  "toAccount": "<account-uuid>",
   "amount": 10000,
   "idempotencyKey": "fund-ada-001"
 }
@@ -615,11 +617,11 @@ Credit an account from the **system user’s** account (seed / treasury funding)
 
 **Notes**
 
-- Source account is resolved as an account owned by the authenticated system user (`user: req.user._id`)
-- Creates debit (system) + credit (target) ledger entries inside a session
+- Source account is resolved as an account owned by the authenticated system user (`userId: req.user.id`)
+- Creates debit (system) + credit (target) ledger entries inside a PostgreSQL transaction
 - Returns `201` on success
 
-You must seed a system user in Mongo with `systemUser: true` and give that user an account before using this endpoint (the field is immutable via normal updates after creation).
+You must seed a system user in PostgreSQL with `systemUser: true` and give that user an account before using this endpoint (the field is immutable via normal updates after creation).
 
 ---
 
@@ -658,12 +660,12 @@ createTransaction()
   ├─ load accounts, check active
   ├─ check idempotencyKey history
   ├─ getBalance(from) >= amount ?
-  ├─ startSession() / startTransaction()
+  ├─ sequelize.transaction()  (PostgreSQL ACID)
   │    ├─ Transaction { status: pending }
   │    ├─ Ledger debit  (from)
   │    ├─ Ledger credit (to)
   │    ├─ Transaction status → completed
-  │    └─ commitTransaction()
+  │    └─ commit / rollback
   ├─ return 201 to client
   └─ sendTransactionEmail(sender)  (background / best-effort)
 ```
@@ -703,10 +705,27 @@ This service is deployed as a Render **Web Service** from GitHub.
 | Build command | `npm install` |
 | Start command | `npm start` (runs `node server.js`) |
 | Health | `GET /` |
-| Required env | `MONGO_URI`, `JWT_SECRET` |
+| Required env | `DATABASE_URL`, `JWT_SECRET` |
 | Optional env | `EMAIL_USER`, `CLIENT_ID`, `CLIENT_SECRET`, `REFRESH_TOKEN` |
 
-Also see `render.yaml` for Blueprint-style config. Atlas **Network Access** must allow Render (`0.0.0.0/0` is typical for demos).
+Also see `render.yaml` for Blueprint-style config. Create a PostgreSQL database (Render Postgres, Neon, Supabase, etc.), copy its URL into `DATABASE_URL`, and redeploy. Tables are created/updated on startup via `sequelize.sync({ alter: true })`.
+
+### Migrating existing MongoDB data
+
+If you already have data in MongoDB, copy it into PostgreSQL once:
+
+```bash
+# .env must include both:
+# MONGO_URI=mongodb+srv://...
+# DATABASE_URL=postgresql://...
+
+# Optional: wipe Postgres tables first
+# MIGRATE_CLEAR=true
+
+npm run migrate:mongo
+```
+
+The script remaps Mongo ObjectIds → new UUIDs (keeps relations), copies bcrypt password hashes as-is, and imports users, accounts, transactions, ledgers, and blacklist rows.
 
 **Live Swagger for testing:**  
 [https://bank-ledger-system-trq8.onrender.com/api-docs](https://bank-ledger-system-trq8.onrender.com/api-docs)
@@ -716,11 +735,11 @@ Also see `render.yaml` for Blueprint-style config. Atlas **Network Access** must
 ## 15. Security notes
 
 - Passwords are hashed with **bcrypt** before save and never returned by default queries.
-- JWTs expire in **3 days**; logout adds them to a TTL-backed blacklist.
+- JWTs expire in **3 days**; logout adds them to a time-bounded blacklist table.
 - Auth accepts **Bearer token** or cookie `token` — clearing only Swagger Authorize may leave the cookie active; call logout to invalidate.
 - Ledger rows are **immutable** at the application/model layer.
 - Transfers use **idempotency keys** to reduce double-spend from retries.
-- Transfers that mutate money use **MongoDB multi-document transactions** (requires a replica set — Atlas provides this by default).
+- Transfers that mutate money use **PostgreSQL ACID transactions** via Sequelize.
 - `systemUser` is immutable on the schema; treat system credentials carefully.
 - Keep `JWT_SECRET` and OAuth secrets out of source control.
 

@@ -1,41 +1,61 @@
-const mongoose=require('mongoose');
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/db');
 
-const transactionSchema=new mongoose.Schema({
-    fromAccount:{
-        type:mongoose.Schema.Types.ObjectId,
-        ref:'Account',
-        required:[true,"From account is required"],
-        index:true
+const Transaction = sequelize.define(
+  'Transaction',
+  {
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true,
     },
-    toAccount:{
-        type:mongoose.Schema.Types.ObjectId,
-        ref:'Account',
-        required:[true,"To account is required"],
-        index:true
+    fromAccountId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: 'from_account_id',
     },
-    status:{
-        type:String,
-        enum:{
-            values:["pending","completed","failed"],
-            message:"Status must be either pending, completed or failed"
-        },
-        default:"pending"
+    toAccountId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: 'to_account_id',
     },
-    amount:{
-        type:Number,
-        required:[true,"Amount is required"],
-        min:[0,"Amount must be greater than 0"]
+    status: {
+      type: DataTypes.ENUM('pending', 'completed', 'failed'),
+      allowNull: false,
+      defaultValue: 'pending',
     },
-    idempotencyKey:{
-        type:String,
-        unique:true,
-        required:[true,"Idempotency key is required"],
-        index:true
-    }
-},
-    {
-        timestamps:true
-    })
+    amount: {
+      type: DataTypes.DECIMAL(14, 2),
+      allowNull: false,
+      validate: {
+        min: 0,
+      },
+    },
+    idempotencyKey: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      unique: true,
+      field: 'idempotency_key',
+    },
+  },
+  {
+    tableName: 'transactions',
+    timestamps: true,
+    indexes: [
+      { fields: ['from_account_id'] },
+      { fields: ['to_account_id'] },
+      { fields: ['idempotency_key'], unique: true },
+    ],
+  }
+);
 
-    const transactionModel=mongoose.model('Transaction',transactionSchema);
-    module.exports=transactionModel;
+Transaction.prototype.toJSON = function toJSON() {
+  const values = { ...this.get() };
+  values._id = values.id;
+  values.fromAccount = values.fromAccountId;
+  values.toAccount = values.toAccountId;
+  values.amount = Number(values.amount);
+  return values;
+};
+
+module.exports = Transaction;

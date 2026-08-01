@@ -1,52 +1,68 @@
-const mongoose=require('mongoose');
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/db');
 
-const ledgerSchema=new mongoose.Schema({
-    account:{
-        type:mongoose.Schema.Types.ObjectId,
-        ref:'Account',
-        required:[true,"Account is required"],
-        index:true,
-        immutable:true
+const Ledger = sequelize.define(
+  'Ledger',
+  {
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true,
     },
-    amount:{
-        type:Number,
-        required:[true,"Amount is required"],
-        min:[0,"Amount must be greater than 0"],
-        immutable:true
+    accountId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: 'account_id',
     },
-    transaction:{
-        type:mongoose.Schema.Types.ObjectId,
-        ref:'Transaction',
-        required:[true,"Transaction is required"],
-        index:true,
-        immutable:true
+    amount: {
+      type: DataTypes.DECIMAL(14, 2),
+      allowNull: false,
+      validate: {
+        min: 0,
+      },
     },
-    type:{
-        type:String,
-        enum:{
-            values:["credit","debit"],
-            message:"Type must be either credit or debit",
-        },
-        required:[true,"Type is required"],
-        immutable:true
-    }
-})
+    transactionId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: 'transaction_id',
+    },
+    type: {
+      type: DataTypes.ENUM('credit', 'debit'),
+      allowNull: false,
+    },
+  },
+  {
+    tableName: 'ledgers',
+    timestamps: true,
+    updatedAt: false,
+    indexes: [
+      { fields: ['account_id'] },
+      { fields: ['transaction_id'] },
+    ],
+    hooks: {
+      beforeUpdate: () => {
+        throw new Error('Ledger entries cannot be modified or deleted');
+      },
+      beforeDestroy: () => {
+        throw new Error('Ledger entries cannot be modified or deleted');
+      },
+      beforeBulkUpdate: () => {
+        throw new Error('Ledger entries cannot be modified or deleted');
+      },
+      beforeBulkDestroy: () => {
+        throw new Error('Ledger entries cannot be modified or deleted');
+      },
+    },
+  }
+);
 
+Ledger.prototype.toJSON = function toJSON() {
+  const values = { ...this.get() };
+  values._id = values.id;
+  values.account = values.accountId;
+  values.transaction = values.transactionId;
+  values.amount = Number(values.amount);
+  return values;
+};
 
-function preventledgerModification(next){
-    throw new Error("Ledger entries cannot be modified or deleted");
-}
-
-ledgerSchema.pre('updateOne', preventledgerModification);
-ledgerSchema.pre('deleteOne', preventledgerModification);
-ledgerSchema.pre('findOneAndUpdate', preventledgerModification);
-ledgerSchema.pre('findOneAndDelete', preventledgerModification);
-ledgerSchema.pre('findOneAndRemove', preventledgerModification);
-ledgerSchema.pre('remove', preventledgerModification);
-ledgerSchema.pre('deleteMany', preventledgerModification);
-ledgerSchema.pre('updateMany', preventledgerModification);
-ledgerSchema.pre('findOneAndReplace', preventledgerModification);
-
-const ledgerModel=mongoose.model('Ledger',ledgerSchema);
-
-module.exports=ledgerModel;
+module.exports = Ledger;

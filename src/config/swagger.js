@@ -8,7 +8,7 @@ const swaggerDefinition = {
     title: 'Bank Ledger System API',
     version: '1.0.0',
     description: `
-Professional banking ledger backend built with Node.js, Express, and MongoDB.
+Professional banking ledger backend built with Node.js, Express, PostgreSQL, and Sequelize.
 
 ## Architecture overview
 
@@ -32,18 +32,18 @@ Balance is always derived as:
 
 ## Token blacklisting
 
-On **logout**, the JWT is stored in MongoDB (\`Blacklist\`) with a TTL matching the token expiry.
-Auth middleware rejects blacklisted tokens so a logged-out JWT cannot be reused.
+On **logout**, the JWT is stored in PostgreSQL (\`blacklists\`) with an \`expires_at\` timestamp.
+Auth middleware rejects non-expired blacklisted tokens. Expired rows are cleaned up opportunistically.
 
 ## Idempotency
 
 Transfer endpoints require a unique \`idempotencyKey\`. Retries with the same key return the previous
 outcome instead of moving money twice.
 
-## MongoDB transactions
+## ACID transactions (PostgreSQL)
 
-User transfers and system funding run inside MongoDB multi-document sessions so transaction records
-and ledger entries commit or roll back together.
+User transfers and system funding run inside Sequelize/PostgreSQL transactions so transaction records
+and ledger entries commit or roll back together (Atomicity, Consistency, Isolation, Durability).
     `.trim(),
     contact: {
       name: 'Bank Ledger System',
@@ -246,7 +246,7 @@ and ledger entries commit or roll back together.
       Blacklist: {
         type: 'object',
         description:
-          'Blacklisted JWT stored after logout. MongoDB TTL index on `expiresAt` removes the row after the JWT natural expiry.',
+          'Blacklisted JWT stored after logout. `expiresAt` matches the JWT exp claim; expired rows are purged on auth checks.',
         properties: {
           _id: {
             type: 'string',

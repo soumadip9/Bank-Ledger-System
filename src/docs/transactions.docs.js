@@ -6,7 +6,7 @@
  *     summary: Transfer funds between accounts
  *     description: |
  *       Moves money from `fromAccount` to `toAccount` using a **double-entry ledger**
- *       inside a **MongoDB multi-document transaction**.
+ *       inside a **PostgreSQL ACID transaction** (Sequelize).
  *
  *       ## Double-entry behavior
  *       On success the API creates:
@@ -138,8 +138,8 @@
  *       Requires a JWT for a user with `systemUser: true` (`authSystemUserMiddleware`).
  *       Normal users receive `401 Unauthorized`.
  *
- *       ## Double-entry + MongoDB transaction
- *       Inside a MongoDB session the API:
+ *       ## Double-entry + PostgreSQL ACID transaction
+ *       Inside a Sequelize/PostgreSQL transaction the API:
  *       1. Resolves the system user's funding account
  *       2. Creates a pending `Transaction`
  *       3. Writes ledger **debit** (system) + **credit** (target)
@@ -147,7 +147,7 @@
  *
  *       Provide a unique `idempotencyKey` for safe retries.
  *
- *       Seed a system user in MongoDB (`systemUser: true`) and create an account for that user before calling this endpoint.
+ *       Seed a system user in PostgreSQL (`systemUser: true`) and create an account for that user before calling this endpoint.
  *     security:
  *       - bearerAuth: []
  *     requestBody:

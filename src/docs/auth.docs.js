@@ -115,7 +115,7 @@
  *       3. Stores the token in the `Blacklist` collection with `expiresAt` = JWT `exp`
  *       4. Clears the `token` cookie
  *
- *       MongoDB TTL automatically deletes blacklist rows after expiry.
+ *       Expired blacklist rows are purged opportunistically on auth checks.
  *       Subsequent requests with the same JWT receive `401 Unauthorized`.
  *     security:
  *       - bearerAuth: []

@@ -1,21 +1,55 @@
-const mongoose = require('mongoose');
+const { DataTypes, Op } = require('sequelize');
+const { sequelize } = require('../config/db');
 
-const blacklistSchema = new mongoose.Schema({
+const Blacklist = sequelize.define(
+  'Blacklist',
+  {
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true,
+    },
     token: {
-        type: String,
-        required: [true, "Token is required"],
-        unique: true,
-        index: true,
+      type: DataTypes.TEXT,
+      allowNull: false,
+      unique: true,
     },
     expiresAt: {
-        type: Date,
-        required: [true, "Expiry is required"],
-        index: { expires: 0 },
+      type: DataTypes.DATE,
+      allowNull: false,
+      field: 'expires_at',
     },
-}, {
+  },
+  {
+    tableName: 'blacklists',
     timestamps: true,
-});
+    indexes: [
+      { fields: ['token'], unique: true },
+      { fields: ['expires_at'] },
+    ],
+  }
+);
 
-const blacklistModel = mongoose.model('Blacklist', blacklistSchema);
+Blacklist.prototype.toJSON = function toJSON() {
+  const values = { ...this.get() };
+  values._id = values.id;
+  return values;
+};
 
-module.exports = blacklistModel;
+/** Find a non-expired blacklisted token; purge expired rows opportunistically. */
+Blacklist.findActiveToken = async function findActiveToken(token) {
+  await Blacklist.destroy({
+    where: {
+      expiresAt: { [Op.lt]: new Date() },
+    },
+  });
+
+  return Blacklist.findOne({
+    where: {
+      token,
+      expiresAt: { [Op.gt]: new Date() },
+    },
+  });
+};
+
+module.exports = Blacklist;

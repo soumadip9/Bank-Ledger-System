@@ -1,51 +1,89 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
 const bcrypt = require('bcryptjs');
+const { sequelize } = require('../config/db');
 
-const userSchema = new mongoose.Schema({
+const User = sequelize.define(
+  'User',
+  {
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true,
+    },
     email: {
-        type: String,
-        required: [true,"Email is required"],
-        trim: true,
-          match: [
-      /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-      "Please enter a valid email address"
-    ],
-    unique: [true,"Email already exists"]
+      type: DataTypes.STRING,
+      allowNull: false,
+      unique: true,
+      validate: {
+        isEmail: { msg: 'Please enter a valid email address' },
+      },
     },
     name: {
-        type: String,
-        required: [true,"Name is required"],
-        trim: true
+      type: DataTypes.STRING,
+      allowNull: false,
     },
     password: {
-        type: String,
-        required: [true,"Password is required"],
-        minlength: [6,"Password must be at least 6 characters long"],
-        select: false // Exclude password from query results by default
+      type: DataTypes.STRING,
+      allowNull: false,
+      validate: {
+        len: {
+          args: [6, 255],
+          msg: 'Password must be at least 6 characters long',
+        },
+      },
     },
     systemUser: {
-        type: Boolean,
-        default: false,
-        immutable: true,
-    }
-},{
-    timestamps: true
-}
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+  },
+  {
+    tableName: 'users',
+    timestamps: true,
+    defaultScope: {
+      attributes: { exclude: ['password'] },
+    },
+    scopes: {
+      withPassword: {
+        attributes: [
+          'id',
+          'email',
+          'name',
+          'password',
+          'systemUser',
+          'createdAt',
+          'updatedAt',
+        ],
+      },
+    },
+    hooks: {
+      beforeCreate: async (user) => {
+        if (user.password) {
+          user.password = await bcrypt.hash(user.password, 10);
+        }
+      },
+      beforeUpdate: async (user) => {
+        if (user.changed('systemUser')) {
+          throw new Error('systemUser is immutable');
+        }
+        if (user.changed('password')) {
+          user.password = await bcrypt.hash(user.password, 10);
+        }
+      },
+    },
+  }
 );
 
-userSchema.pre('save', async function(next) {
-    if (!this.isModified('password')) return ;
-
-
-const hash= await bcrypt.hash(this.password, 10);
-this.password = hash;
-return
-})
-
-userSchema.methods.comparePassword = async function(candidatePassword) {
-    return await bcrypt.compare(candidatePassword, this.password);
+User.prototype.comparePassword = async function comparePassword(candidatePassword) {
+  return bcrypt.compare(candidatePassword, this.password);
 };
 
-const userModel = mongoose.model('User', userSchema);
+User.prototype.toJSON = function toJSON() {
+  const values = { ...this.get() };
+  values._id = values.id;
+  delete values.password;
+  return values;
+};
 
-module.exports = userModel;
+module.exports = User;

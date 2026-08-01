@@ -77,7 +77,7 @@
  *         required: true
  *         schema:
  *           type: string
- *         description: MongoDB ObjectId of the account
+ *         description: UUID of the account
  *         example: 66f0c2a1b4e2a91c5d654321
  *     responses:
  *       200:

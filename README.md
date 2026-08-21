@@ -101,14 +101,31 @@ Ledger entries cannot be updated or deleted. Sequelize hooks on the Ledger model
 
 Every transfer requires a unique `idempotencyKey`. Retries with the same key return the previous outcome (`pending` / `completed` / `failed`) instead of creating duplicate money movement.
 
+### Pessimistic row-level locking (`SELECT ... FOR UPDATE`)
+
+To eliminate double-spending race conditions from concurrent transfer requests on the same sender account, the system enforces **pessimistic row locking** inside the database transaction:
+
+```javascript
+const fromUserAccount = await Account.findByPk(fromAccount, {
+  include: [{ model: User, as: 'user' }],
+  transaction: t,
+  lock: t.LOCK.UPDATE, // Issues SELECT ... FOR UPDATE in PostgreSQL
+});
+```
+
+While the lock is held, any concurrent transfer request attempting to lock or modify the same sender account row will block in PostgreSQL until the initial transaction commits or rolls back.
+
 ### Atomic transfers (ACID)
 
 User-to-user transfers run inside a **PostgreSQL transaction** via Sequelize:
 
-1. Create pending transaction
-2. Create debit + credit ledger entries
-3. Mark transaction `completed`
-4. Commit — or roll back on failure
+1. Start transaction `t = await sequelize.transaction()`
+2. Lock sender account row (`lock: t.LOCK.UPDATE`)
+3. Calculate/verify balance inside `t` (`fromUserAccount.getBalance({ transaction: t })`)
+4. Create pending transaction record
+5. Create debit + credit ledger entries
+6. Mark transaction `completed`
+7. Commit `t` — or roll back on failure (releasing row lock)
 
 This keeps ledger + transaction state consistent (Atomicity, Consistency, Isolation, Durability).
 
@@ -738,6 +755,7 @@ The script remaps Mongo ObjectIds → new UUIDs (keeps relations), copies bcrypt
 - JWTs expire in **3 days**; logout adds them to a time-bounded blacklist table.
 - Auth accepts **Bearer token** or cookie `token` — clearing only Swagger Authorize may leave the cookie active; call logout to invalidate.
 - Ledger rows are **immutable** at the application/model layer.
+- Transfers use **pessimistic row-level locking (`SELECT ... FOR UPDATE`)** to serialize concurrent transactions and prevent double-spending race conditions.
 - Transfers use **idempotency keys** to reduce double-spend from retries.
 - Transfers that mutate money use **PostgreSQL ACID transactions** via Sequelize.
 - `systemUser` is immutable on the schema; treat system credentials carefully.

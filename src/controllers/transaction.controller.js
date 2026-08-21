@@ -16,20 +16,6 @@ async function createTransaction(req, res) {
     });
   }
 
-  const fromUserAccount = await Account.findByPk(fromAccount, {
-    include: [{ model: User, as: 'user' }],
-  });
-
-  const toUserAccount = await Account.findByPk(toAccount, {
-    include: [{ model: User, as: 'user' }],
-  });
-
-  if (!fromUserAccount || !toUserAccount) {
-    return res.status(404).json({
-      message: 'One or both accounts not found',
-    });
-  }
-
   const existingTransaction = await Transaction.findOne({
     where: { idempotencyKey },
   });
@@ -54,27 +40,50 @@ async function createTransaction(req, res) {
     });
   }
 
-  if (
-    fromUserAccount.status !== 'active' ||
-    toUserAccount.status !== 'active'
-  ) {
-    return res.status(400).json({
-      message: 'One or both accounts are not active',
-    });
-  }
-
-  const balance = await fromUserAccount.getBalance();
-
-  if (balance < amount) {
-    return res.status(400).json({
-      message: `Insufficient balance. Current balance: ${balance}`,
-    });
-  }
-
   const t = await sequelize.transaction();
   let committed = false;
 
   try {
+    const fromUserAccount = await Account.findByPk(fromAccount, {
+      include: [{ model: User, as: 'user' }],
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    const toUserAccount = await Account.findByPk(toAccount, {
+      include: [{ model: User, as: 'user' }],
+      transaction: t,
+    });
+
+    if (!fromUserAccount || !toUserAccount) {
+      await t.rollback();
+      committed = true;
+      return res.status(404).json({
+        message: 'One or both accounts not found',
+      });
+    }
+
+    if (
+      fromUserAccount.status !== 'active' ||
+      toUserAccount.status !== 'active'
+    ) {
+      await t.rollback();
+      committed = true;
+      return res.status(400).json({
+        message: 'One or both accounts are not active',
+      });
+    }
+
+    const balance = await fromUserAccount.getBalance({ transaction: t });
+
+    if (balance < amount) {
+      await t.rollback();
+      committed = true;
+      return res.status(400).json({
+        message: `Insufficient balance. Current balance: ${balance}`,
+      });
+    }
+
     const transaction = await Transaction.create(
       {
         fromAccountId: fromAccount,

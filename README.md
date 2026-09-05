@@ -144,6 +144,7 @@ JWTs are issued on register/login (3-day expiry). On logout, the token is stored
 | Database | PostgreSQL via Sequelize + `pg` |
 | Auth | `jsonwebtoken`, `bcryptjs`, `cookie-parser` |
 | Email | Nodemailer (Gmail OAuth2) |
+| Security | `express-rate-limit` (Rate Limiting) |
 | API docs | `swagger-jsdoc`, `swagger-ui-express` (OpenAPI 3.0) |
 | Config | `dotenv` |
 | Hosting | Render Web Service + managed PostgreSQL (e.g. Render Postgres / Neon / Supabase) |

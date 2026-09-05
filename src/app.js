@@ -4,6 +4,7 @@ const authRouter=require('./routes/auth.routes');
 const accountRouter=require('./routes/account.routes');
 const transactionRouter=require('./routes/transaction.routes');
 const { setupSwagger }=require('./config/swagger');
+const { globalLimiter, authLimiter } = require('./middleware/rateLimiter.middleware');
 
 const app=express();
 app.use(express.json());
@@ -18,7 +19,8 @@ app.get("/", (req, res) => {
 
 setupSwagger(app);
 
-app.use("/api/auth",authRouter)
-app.use("/api/account",accountRouter)
-app.use("/api/transactions",transactionRouter)
+app.use("/api/auth", authLimiter, authRouter);
+app.use("/api/account", globalLimiter, accountRouter);
+app.use("/api/transactions", globalLimiter, transactionRouter);
+
 module.exports=app;

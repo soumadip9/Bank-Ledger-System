@@ -44,16 +44,31 @@ async function createTransaction(req, res) {
   let committed = false;
 
   try {
-    const fromUserAccount = await Account.findByPk(fromAccount, {
-      include: [{ model: User, as: 'user' }],
-      transaction: t,
-      lock: t.LOCK.UPDATE,
-    });
+    if (fromAccount === toAccount) {
+      await t.rollback();
+      committed = true;
+      return res.status(400).json({
+        message: 'Cannot transfer money to the same account',
+      });
+    }
 
-    const toUserAccount = await Account.findByPk(toAccount, {
-      include: [{ model: User, as: 'user' }],
-      transaction: t,
-    });
+    // Deterministic Lock Ordering: Sort account IDs to prevent deadlocks under concurrent transfers
+    const sortedAccountIds = [fromAccount, toAccount].sort();
+    const accountsMap = {};
+
+    for (const id of sortedAccountIds) {
+      const acc = await Account.findByPk(id, {
+        include: [{ model: User, as: 'user' }],
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (acc) {
+        accountsMap[acc.id] = acc;
+      }
+    }
+
+    const fromUserAccount = accountsMap[fromAccount];
+    const toUserAccount = accountsMap[toAccount];
 
     if (!fromUserAccount || !toUserAccount) {
       await t.rollback();
@@ -181,45 +196,88 @@ async function createInitialFundTransaction(req, res) {
   }
 
   const t = await sequelize.transaction();
+  let committed = false;
 
-  const transaction = await Transaction.create(
-    {
-      fromAccountId: fromUserAccount.id,
-      toAccountId: toUserAccount.id,
-      amount,
-      idempotencyKey,
-      status: 'pending',
-    },
-    { transaction: t }
-  );
+  try {
+    // Deterministic Lock Ordering: Sort account IDs to prevent deadlocks
+    const sortedAccountIds = [fromUserAccount.id, toUserAccount.id].sort();
+    const accountsMap = {};
 
-  await Ledger.create(
-    {
-      accountId: fromUserAccount.id,
-      amount: amount,
-      transactionId: transaction.id,
-      type: 'debit',
-    },
-    { transaction: t }
-  );
-  await Ledger.create(
-    {
-      accountId: toUserAccount.id,
-      amount: amount,
-      transactionId: transaction.id,
-      type: 'credit',
-    },
-    { transaction: t }
-  );
+    for (const id of sortedAccountIds) {
+      const acc = await Account.findByPk(id, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (acc) {
+        accountsMap[acc.id] = acc;
+      }
+    }
 
-  transaction.status = 'completed';
-  await transaction.save({ transaction: t });
-  await t.commit();
+    const lockedFromAccount = accountsMap[fromUserAccount.id];
+    const lockedToAccount = accountsMap[toUserAccount.id];
 
-  return res.status(201).json({
-    message: 'Initial fund transaction completed successfully',
-    transaction: transaction,
-  });
+    if (!lockedFromAccount || !lockedToAccount) {
+      await t.rollback();
+      committed = true;
+      return res.status(404).json({
+        message: 'System or target account not found',
+      });
+    }
+
+    const transaction = await Transaction.create(
+      {
+        fromAccountId: lockedFromAccount.id,
+        toAccountId: lockedToAccount.id,
+        amount,
+        idempotencyKey,
+        status: 'pending',
+      },
+      { transaction: t }
+    );
+
+    await Ledger.create(
+      {
+        accountId: lockedFromAccount.id,
+        amount: amount,
+        transactionId: transaction.id,
+        type: 'debit',
+      },
+      { transaction: t }
+    );
+    await Ledger.create(
+      {
+        accountId: lockedToAccount.id,
+        amount: amount,
+        transactionId: transaction.id,
+        type: 'credit',
+      },
+      { transaction: t }
+    );
+
+    transaction.status = 'completed';
+    await transaction.save({ transaction: t });
+    await t.commit();
+    committed = true;
+
+    return res.status(201).json({
+      message: 'Initial fund transaction completed successfully',
+      transaction: transaction,
+    });
+  } catch (error) {
+    if (!committed) {
+      try {
+        await t.rollback();
+      } catch (rollbackError) {
+        console.error('Abort initial fund transaction failed:', rollbackError.message);
+      }
+    }
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        message: error.message,
+      });
+    }
+  }
 }
 
 async function getTransactionById(req, res) {
